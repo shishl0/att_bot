@@ -873,10 +873,13 @@ def format_status(alias: str) -> str:
     worker = WORKERS.get(alias)
     if worker and worker.is_alive():
         is_active_now = bool(worker._active)
+        browser_active = worker.driver is not None
     else:
         is_active_now = bool(rt.get("is_active_now", False))
+        browser_active = False
         
     activity_icon = "🟢 В работе" if is_active_now else "🔴 Ожидание"
+    browser_icon = "🌐 Открыт" if browser_active else "🛑 Закрыт"
     
     total = rt.get("total_marked", 0)
     consecutive = rt.get("consecutive_marked", 0)
@@ -909,13 +912,6 @@ def format_status(alias: str) -> str:
     
     login = acc.get("username", "-")
     
-    battery = get_battery_status()
-    if battery:
-        bat_icon = "⚡" if battery['charging'] else "🔋"
-        battery_str = f"{bat_icon} {battery['percent']}%"
-    else:
-        battery_str = "🔋 неизвестно"
-
     err_out = ""
     last_err = rt.get("last_error")
     if last_err:
@@ -926,11 +922,11 @@ def format_status(alias: str) -> str:
         f"👤 <b>Аккаунт:</b> {alias}\n"
         f"├ <b>Логин:</b> <code>{login}</code>\n"
         f"├ <b>Включен:</b> {enabled} | <b>Ручной:</b> {manual}\n"
+        f"├ <b>Браузер:</b> {browser_icon}\n"
         f"├ <b>Статус:</b> {activity_icon} ({active_dur})\n"
         f"├ <b>Отметки:</b> всего <b>{total}</b>, подряд <b>{consecutive}</b>\n"
         f"├ <b>Последняя:</b> {last_mark}\n"
-        f"├ <b>Расписание:</b> {sched_disp}\n"
-        f"└ <b>Сервер:</b> {battery_str}{err_out}\n"
+        f"└ <b>Расписание:</b> {sched_disp}{err_out}\n"
     )
 
 
