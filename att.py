@@ -78,7 +78,7 @@ def default_state() -> Dict[str, Any]:
         },
         "settings": {
             "headless": True,
-            "debug": DEBUG_DEFAULT
+            "debug": DEBUG_DEFAULT,
             "check_interval_sec": 10,
             "refresh_interval_sec": 25,
             "heartbeat_sec": 600,
