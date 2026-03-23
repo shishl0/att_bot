@@ -78,7 +78,7 @@ def default_state() -> Dict[str, Any]:
         },
         "settings": {
             "headless": True,
-            "debug": DEBUG_DEFAULT,
+            "debug": DEBUG_DEFAULT
             "check_interval_sec": 10,
             "refresh_interval_sec": 25,
             "heartbeat_sec": 600,
@@ -457,6 +457,12 @@ class AttendanceWorker(threading.Thread):
             try:
                 self._ensure_driver()
 
+                rt_clear = get_runtime(self.alias)
+                if "last_error" in rt_clear:
+                    rt_clear.pop("last_error", None)
+                    rt_clear.pop("last_error_ts", None)
+                    set_runtime(self.alias, rt_clear)
+
                 acc = get_account(self.alias)
                 if not acc or not acc.get("enabled", False):
                     self._set_active(False)
@@ -505,7 +511,12 @@ class AttendanceWorker(threading.Thread):
                 time.sleep(check_interval)
 
             except Exception as e:
-                log_event("worker_error", alias=self.alias, error=str(e))
+                error_str = str(e)
+                log_event("worker_error", alias=self.alias, error=error_str)
+                rt = get_runtime(self.alias)
+                rt["last_error"] = error_str
+                rt["last_error_ts"] = datetime.now().isoformat(timespec="seconds")
+                set_runtime(self.alias, rt)
                 time.sleep(5)
 
             maybe_warn_low_battery(self.notifier)
@@ -891,6 +902,12 @@ def format_status(alias: str) -> str:
     else:
         battery_str = "🔋 неизвестно"
 
+    err_out = ""
+    last_err = rt.get("last_error")
+    if last_err:
+        last_err_ts = rt.get("last_error_ts", "")
+        err_out = f"\n⚠️ <b>Ошибка:</b> <code>{last_err[:200]}</code> ({last_err_ts})"
+
     return (
         f"👤 <b>Аккаунт:</b> {alias}\n"
         f"├ <b>Логин:</b> <code>{login}</code>\n"
@@ -899,7 +916,7 @@ def format_status(alias: str) -> str:
         f"├ <b>Отметки:</b> всего <b>{total}</b>, подряд <b>{consecutive}</b>\n"
         f"├ <b>Последняя:</b> {last_mark}\n"
         f"├ <b>Расписание:</b> {sched_disp}\n"
-        f"└ <b>Сервер:</b> {battery_str}\n"
+        f"└ <b>Сервер:</b> {battery_str}{err_out}\n"
     )
 
 
@@ -1022,6 +1039,9 @@ def tg_main_menu_markup() -> Dict[str, Any]:
             [
                 {"text": h_text, "callback_data": "menu_toggle_headless"},
                 {"text": "🔄 Перезапустить", "callback_data": "menu_restart"},
+            ],
+            [
+                {"text": "📸 Скриншот", "callback_data": "menu_screenshot"},
             ]
         ]
     }
@@ -1145,6 +1165,30 @@ def run_telegram(token: str) -> None:
                         if w:
                             w.stop()
                         send(chat_id, f"⏸ <b>{alias}</b> выключен.", markup=tg_back_markup(), message_id=msg_id)
+                        continue
+
+                    if data_cb == "menu_screenshot":
+                        send(chat_id, "Выберите аккаунт для скриншота:", markup=tg_aliases_markup("act_screen"), message_id=msg_id)
+                        continue
+                    if data_cb.startswith("act_screen:"):
+                        alias = data_cb.split(":", 1)[1]
+                        w = WORKERS.get(alias)
+                        if w and w.driver:
+                            try:
+                                screen_path = os.path.join(LOG_DIR, f"screen_{alias}.png")
+                                w.driver.save_screenshot(screen_path)
+                                with open(screen_path, "rb") as f:
+                                    requests.post(
+                                        f"https://api.telegram.org/bot{token}/sendPhoto",
+                                        data={"chat_id": chat_id},
+                                        files={"photo": f},
+                                        timeout=15
+                                    )
+                                send(chat_id, "Главное меню:", markup=tg_main_menu_markup(), message_id=msg_id)
+                            except Exception as e:
+                                send(chat_id, f"❌ Ошибка скриншота: {e}", markup=tg_back_markup(), message_id=msg_id)
+                        else:
+                            send(chat_id, f"❌ Браузер для <b>{alias}</b> не запущен.", markup=tg_back_markup(), message_id=msg_id)
                         continue
 
                     if data_cb == "menu_del":
