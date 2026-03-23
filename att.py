@@ -577,7 +577,21 @@ class AttendanceWorker(threading.Thread):
         options.add_argument("--disable-infobars")
         options.add_argument("--disk-cache-size=0")
         options.add_argument("--media-cache-size=0")
-        self.driver = webdriver.Chrome(options=options)
+
+        import shutil
+        from selenium.webdriver.chrome.service import Service
+
+        chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
+        if chromium_path:
+            options.binary_location = chromium_path
+
+        driver_path = shutil.which("chromedriver")
+        if driver_path:
+            service = Service(executable_path=driver_path)
+            self.driver = webdriver.Chrome(service=service, options=options)
+        else:
+            self.driver = webdriver.Chrome(options=options)
+            
         self._logged_in = False
 
     def _close_driver(self) -> None:
