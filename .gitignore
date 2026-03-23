@@ -1,0 +1,34 @@
+# Environment variables
+.env
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Application data and logs
+data/
+logs/
+
+# IDE files
+.vscode/
+.idea/
+.DS_Store
+
+# Patch files
+*.patch
+/tmp/
+
+# other
+unix.py
+test.py
+att_prelast.py
+run_login.py
+vaadin_client.py
