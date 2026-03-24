@@ -12,6 +12,7 @@ jobs:
       - name: Pull and Restart
         run: |
           cd /home/zhan/att_bot
-          git pull origin main
+          git fetch origin main
+          git reset --hard origin/main
           ./venv/bin/pip install -r requirements.txt
           sudo systemctl restart att_bot
