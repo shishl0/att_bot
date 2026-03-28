@@ -24,7 +24,7 @@ REG_URL = "https://wsp.kbtu.kz/RegistrationOnline"
 NEWS_URL = "https://wsp.kbtu.kz/News"
 
 # Телеграм токен: лучше задавать через переменную окружения
-# export TELEGRAM_BOT_TOKEN=123456:ABCDEF
+# export TELEGRAM_BOT_TOKEN=123456:ABCDEF l
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # Опциональный дебаг (по умолчанию выключен)
 DEBUG_DEFAULT = False
