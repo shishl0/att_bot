@@ -550,7 +550,7 @@ class AttendanceWorker(threading.Thread):
         if self.driver:
             return
         options = ChromeOptions()
-        
+
         acc = get_account(self.alias) or {}
         headless = bool(get_setting(acc, "headless", True))
         if headless:
@@ -577,6 +577,8 @@ class AttendanceWorker(threading.Thread):
         options.add_argument("--disable-infobars")
         options.add_argument("--disk-cache-size=0")
         options.add_argument("--media-cache-size=0")
+        options.add_argument("--remote-debugging-port=0")
+        options.add_argument("--single-process")
 
         import shutil
         from selenium.webdriver.chrome.service import Service
@@ -585,13 +587,46 @@ class AttendanceWorker(threading.Thread):
         if chromium_path:
             options.binary_location = chromium_path
 
+        # Пробуем системный chromedriver, потом webdriver-manager как фолбэк
         driver_path = shutil.which("chromedriver")
-        if driver_path:
-            service = Service(executable_path=driver_path)
-            self.driver = webdriver.Chrome(service=service, options=options)
-        else:
-            self.driver = webdriver.Chrome(options=options)
-            
+        service = Service(executable_path=driver_path) if driver_path else None
+
+        try:
+            if service:
+                self.driver = webdriver.Chrome(service=service, options=options)
+            else:
+                self.driver = webdriver.Chrome(options=options)
+        except Exception as primary_err:
+            log_event(
+                "chromedriver_fallback",
+                alias=self.alias,
+                primary_error=str(primary_err),
+            )
+            # Фолбэк: webdriver-manager скачает совместимый ChromeDriver автоматически
+            try:
+                from webdriver_manager.chrome import ChromeDriverManager
+                from webdriver_manager.core.os_manager import ChromeType
+
+                # Предпочитаем chromium если установлен
+                if chromium_path:
+                    mgr_service = Service(
+                        ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
+                    )
+                else:
+                    mgr_service = Service(ChromeDriverManager().install())
+                self.driver = webdriver.Chrome(service=mgr_service, options=options)
+            except Exception as fallback_err:
+                log_event(
+                    "chromedriver_fallback_failed",
+                    alias=self.alias,
+                    error=str(fallback_err),
+                )
+                raise RuntimeError(
+                    f"Не удалось запустить ChromeDriver.\n"
+                    f"Основная ошибка: {primary_err}\n"
+                    f"Fallback ошибка: {fallback_err}"
+                ) from fallback_err
+
         self._logged_in = False
 
     def _close_driver(self) -> None:
