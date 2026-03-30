@@ -458,6 +458,15 @@ class AttendanceWorker(threading.Thread):
                 continue
 
             try:
+                # Если драйвер уже был создан, проверяем его «живучесть»
+                if self.driver:
+                    try:
+                        # Простой пинг: запрашиваем текущий URL
+                        self.driver.current_url
+                    except Exception:
+                        log_event("driver_dead", alias=self.alias)
+                        self._close_driver()
+
                 self._ensure_driver()
 
                 rt_clear = get_runtime(self.alias)
@@ -582,6 +591,9 @@ class AttendanceWorker(threading.Thread):
         options.add_argument("--media-cache-size=0")
         options.add_argument("--remote-debugging-port=0")
         options.add_argument("--single-process")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--js-flags='--max-old-space-size=256'") # Ограничиваем JS память
+        options.page_load_strategy = 'eager' # Не ждем загрузки всех картинок
 
         import shutil
         from selenium.webdriver.chrome.service import Service
@@ -651,7 +663,10 @@ class AttendanceWorker(threading.Thread):
                     f"Fallback ошибка: {fallback_err}"
                 ) from fallback_err
 
-        self._logged_in = False
+        if self.driver:
+            self.driver.set_page_load_timeout(30)
+            self.driver.set_script_timeout(30)
+            self._logged_in = False
 
     def _close_driver(self) -> None:
         if self.driver:
