@@ -7,6 +7,7 @@ import threading
 import time
 import subprocess
 import re
+import platform
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,7 +25,7 @@ REG_URL = "https://wsp.kbtu.kz/RegistrationOnline"
 NEWS_URL = "https://wsp.kbtu.kz/News"
 
 # Телеграм токен: лучше задавать через переменную окружения
-# export TELEGRAM_BOT_TOKEN=123456:ABCDEF l
+# export TELEGRAM_BOT_TOKEN=123456:ABCDEF
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 # Опциональный дебаг (по умолчанию выключен)
 DEBUG_DEFAULT = False
@@ -587,27 +588,47 @@ class AttendanceWorker(threading.Thread):
         if chromium_path:
             options.binary_location = chromium_path
 
-        # Пробуем системный chromedriver, потом webdriver-manager как фолбэк
+        # 1. Приоритет: системный драйвер (особенно важно для ARM64)
         driver_path = shutil.which("chromedriver")
         service = Service(executable_path=driver_path) if driver_path else None
 
+        # 2. Проверка архитектуры
+        arch = platform.machine().lower()
+        is_arm = "arm" in arch or "aarch64" in arch
+
         try:
             if service:
+                # Если системный драйвер найден, пробуем его
                 self.driver = webdriver.Chrome(service=service, options=options)
-            else:
+            elif not is_arm:
+                # Если не ARM, пробуем запуск без явного сервиса (авто-поиск Selenium)
                 self.driver = webdriver.Chrome(options=options)
+            else:
+                # На ARM без системного драйвера ловить нечего
+                raise RuntimeError("Chromedriver not found in PATH (required for ARM64)")
+
         except Exception as primary_err:
             log_event(
-                "chromedriver_fallback",
+                "chromedriver_fallback_setup",
                 alias=self.alias,
                 primary_error=str(primary_err),
+                arch=arch
             )
-            # Фолбэк: webdriver-manager скачает совместимый ChromeDriver автоматически
+
+            # На ARM64 официальных драйверов для скачивания нет, поэтому фолбэк webdriver-manager
+            # скорее всего выдаст 'Exec format error'. Предупреждаем об этом.
+            if is_arm:
+                raise RuntimeError(
+                    f"ARM64/Aarch64 detected. System chromedriver failed or missing.\n"
+                    f"Error: {primary_err}\n"
+                    f"FIX: Run 'sudo apt update && sudo apt install -y chromium-chromedriver'"
+                ) from primary_err
+
+            # Фолбэк для обычных x86_64 систем: webdriver-manager
             try:
                 from webdriver_manager.chrome import ChromeDriverManager
                 from webdriver_manager.core.os_manager import ChromeType
 
-                # Предпочитаем chromium если установлен
                 if chromium_path:
                     mgr_service = Service(
                         ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
@@ -623,6 +644,7 @@ class AttendanceWorker(threading.Thread):
                 )
                 raise RuntimeError(
                     f"Не удалось запустить ChromeDriver.\n"
+                    f"Архитектура: {arch}\n"
                     f"Основная ошибка: {primary_err}\n"
                     f"Fallback ошибка: {fallback_err}"
                 ) from fallback_err
