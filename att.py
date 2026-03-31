@@ -45,6 +45,29 @@ BATTERY_LOCK = threading.Lock()
 BATTERY_LAST_CHECK: float = 0.0
 BATTERY_LAST_WARNED: bool = False
 
+def kill_zombies() -> None:
+    try:
+        import psutil
+        import time
+        for proc in psutil.process_iter(['name', 'create_time']):
+            try:
+                name = proc.info.get('name', '').lower()
+                if 'chrome' in name or 'chromium' in name or 'chromedriver' in name:
+                    if time.time() - proc.info['create_time'] > 7200:
+                        proc.kill()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def zombie_killer_loop() -> None:
+    while not SHUTDOWN.is_set():
+        kill_zombies()
+        time.sleep(600)
+
+threading.Thread(target=zombie_killer_loop, daemon=True).start()
+
+
 DAYS_RU = {
     "пн": 0,
     "пон": 0,
@@ -431,6 +454,7 @@ class AttendanceWorker(threading.Thread):
         self._net_fail_count: int = 0
         self._started_at_ts: Optional[float] = None
         self._next_heartbeat_ts: Optional[float] = None
+        self._driver_started_at: float = 0
 
     def run(self) -> None:
         self.notifier.send_all(f"[{self.alias}] ✅ Бот запущен.")
@@ -460,12 +484,16 @@ class AttendanceWorker(threading.Thread):
             try:
                 # Если драйвер уже был создан, проверяем его «живучесть»
                 if self.driver:
-                    try:
-                        # Простой пинг: запрашиваем текущий URL
-                        self.driver.current_url
-                    except Exception:
-                        log_event("driver_dead", alias=self.alias)
+                    if time.time() - getattr(self, '_driver_started_at', 0) > 3600:
+                        log_event("driver_recycled", alias=self.alias)
                         self._close_driver()
+                    else:
+                        try:
+                            # Простой пинг: запрашиваем текущий URL
+                            self.driver.current_url
+                        except Exception:
+                            log_event("driver_dead", alias=self.alias)
+                            self._close_driver()
 
                 self._ensure_driver()
 
@@ -590,9 +618,13 @@ class AttendanceWorker(threading.Thread):
         options.add_argument("--disk-cache-size=0")
         options.add_argument("--media-cache-size=0")
         options.add_argument("--remote-debugging-port=0")
-        options.add_argument("--single-process")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--js-flags='--max-old-space-size=256'") # Ограничиваем JS память
+        
+        user_data_dir = os.path.join(STATE_DIR, "chrome", self.alias)
+        os.makedirs(user_data_dir, exist_ok=True)
+        options.add_argument(f"--user-data-dir={user_data_dir}")
+
         options.page_load_strategy = 'eager' # Не ждем загрузки всех картинок
 
         import shutil
@@ -629,13 +661,20 @@ class AttendanceWorker(threading.Thread):
                 arch=arch
             )
 
+            # Если сервис запущен, но webdriver упал - надо прибить процесс драйвера
+            if service and hasattr(service, 'process') and service.process:
+                try:
+                    service.process.kill()
+                except Exception:
+                    pass
+
             # На ARM64 официальных драйверов для скачивания нет, поэтому фолбэк webdriver-manager
             # скорее всего выдаст 'Exec format error'. Предупреждаем об этом.
             if is_arm:
                 raise RuntimeError(
                     f"ARM64/Aarch64 detected. System chromedriver failed or missing.\n"
                     f"Error: {primary_err}\n"
-                    f"FIX: Run 'sudo apt update && sudo apt install -y chromium-chromedriver'"
+                    f"FIX: Попробуйте перезапустить бота ('sudo systemctl restart att_bot'), так как Chrome был обновлен или кончилась память. Чтобы полностью переустановить, выполните 'sudo apt update && sudo apt install -y chromium-chromedriver'"
                 ) from primary_err
 
             # Фолбэк для обычных x86_64 систем: webdriver-manager
@@ -667,6 +706,7 @@ class AttendanceWorker(threading.Thread):
             self.driver.set_page_load_timeout(30)
             self.driver.set_script_timeout(30)
             self._logged_in = False
+            self._driver_started_at = time.time()
 
     def _close_driver(self) -> None:
         if self.driver:
