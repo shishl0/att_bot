@@ -670,7 +670,7 @@ class AttendanceWorker(threading.Thread):
                 options.binary_location = chromium_path
 
         # 1. Приоритет: системный драйвер (особенно важно для ARM64)
-        # На Ubuntu Jammy /usr/bin/chromedriver - это wrapper, который часто ломается при апдейтах
+        # На Ubuntu Jammy /usr/bin/chromedriver - это wrapper, который часто ломается при апдейтах # zaebak
         snap_driver = "/snap/bin/chromium.chromedriver"
         if os.path.isfile(snap_driver) and os.access(snap_driver, os.X_OK):
             driver_path = snap_driver
