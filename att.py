@@ -654,7 +654,6 @@ class AttendanceWorker(threading.Thread):
         options.page_load_strategy = 'eager' # Не ждем загрузки всех картинок
 
         import shutil
-        import os
         from selenium.webdriver.chrome.service import Service
 
         snap_browser = "/snap/bin/chromium"
