@@ -656,14 +656,18 @@ class AttendanceWorker(threading.Thread):
         import shutil
         from selenium.webdriver.chrome.service import Service
 
-        snap_browser = "/snap/bin/chromium"
-        if os.path.isfile(snap_browser) and os.access(snap_browser, os.X_OK):
-            chromium_path = snap_browser
+        # Лучшая практика для Snap Chromium на Ubuntu — НЕ указывать явно binary_location-обертки 
+        # (типа /snap/bin/chromium или /usr/bin/chromium-browser), потому что запуск snap из-под snap 
+        # приводит к ошибке 'Chrome instance exited' из-за конфликта AppArmor.
+        # Если нужно, указываем прямой ELF-бинарник внутри snap:
+        chromium_elf = "/snap/chromium/current/usr/lib/chromium-browser/chrome"
+        if os.path.exists(chromium_elf):
+            options.binary_location = chromium_elf
+            chromium_path = chromium_elf
         else:
             chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
-
-        if chromium_path:
-            options.binary_location = chromium_path
+            if chromium_path:
+                options.binary_location = chromium_path
 
         # 1. Приоритет: системный драйвер (особенно важно для ARM64)
         # На Ubuntu Jammy /usr/bin/chromedriver - это wrapper, который часто ломается при апдейтах
