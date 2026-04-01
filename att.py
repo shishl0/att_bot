@@ -49,14 +49,31 @@ def kill_zombies() -> None:
     try:
         import psutil
         import time
+        import os
+        import shutil
         for proc in psutil.process_iter(['name', 'create_time']):
             try:
                 name = proc.info.get('name', '').lower()
-                if 'chrome' in name or 'chromium' in name or 'chromedriver' in name:
+                if 'chrome' in name or 'chromium' in name or 'chromedriver' in name or 'snap-confine' in name:
                     if time.time() - proc.info['create_time'] > 7200:
                         proc.kill()
             except Exception:
                 pass
+                
+        # Очистка мусора Chromium в /tmp, чтобы не забивался диск или tmpfs на Orange Pi
+        try:
+            for item in os.listdir("/tmp"):
+                if item.startswith(".org.chromium.") or item.startswith(".com.google.Chrome."):
+                    path = os.path.join("/tmp", item)
+                    try:
+                        if os.path.isdir(path):
+                            shutil.rmtree(path, ignore_errors=True)
+                        else:
+                            os.remove(path)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -625,17 +642,38 @@ class AttendanceWorker(threading.Thread):
         os.makedirs(user_data_dir, exist_ok=True)
         options.add_argument(f"--user-data-dir={user_data_dir}")
 
+        # Remove stale lock files that cause ChromeDriver "Exit status 1" crashes
+        for l_file in ["SingletonLock", "SingletonSocket", "SingletonCookie"]:
+            try:
+                lf_path = os.path.join(user_data_dir, l_file)
+                if os.path.exists(lf_path):
+                    os.remove(lf_path)
+            except Exception:
+                pass
+
         options.page_load_strategy = 'eager' # Не ждем загрузки всех картинок
 
         import shutil
+        import os
         from selenium.webdriver.chrome.service import Service
 
-        chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
+        snap_browser = "/snap/bin/chromium"
+        if os.path.isfile(snap_browser) and os.access(snap_browser, os.X_OK):
+            chromium_path = snap_browser
+        else:
+            chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
+
         if chromium_path:
             options.binary_location = chromium_path
 
         # 1. Приоритет: системный драйвер (особенно важно для ARM64)
-        driver_path = shutil.which("chromedriver")
+        # На Ubuntu Jammy /usr/bin/chromedriver - это wrapper, который часто ломается при апдейтах
+        snap_driver = "/snap/bin/chromium.chromedriver"
+        if os.path.isfile(snap_driver) and os.access(snap_driver, os.X_OK):
+            driver_path = snap_driver
+        else:
+            driver_path = shutil.which("chromedriver")
+            
         service = Service(executable_path=driver_path) if driver_path else None
 
         # 2. Проверка архитектуры
@@ -661,46 +699,69 @@ class AttendanceWorker(threading.Thread):
                 arch=arch
             )
 
-            # Если сервис запущен, но webdriver упал - надо прибить процесс драйвера
             if service and hasattr(service, 'process') and service.process:
                 try:
                     service.process.kill()
                 except Exception:
                     pass
 
-            # На ARM64 официальных драйверов для скачивания нет, поэтому фолбэк webdriver-manager
-            # скорее всего выдаст 'Exec format error'. Предупреждаем об этом.
+            # Если на ARM упало, пытаемся сделать жесткую самопочинку (саморестарт snap/очистка)
             if is_arm:
-                raise RuntimeError(
-                    f"ARM64/Aarch64 detected. System chromedriver failed or missing.\n"
-                    f"Error: {primary_err}\n"
-                    f"FIX: Попробуйте перезапустить бота ('sudo systemctl restart att_bot'), так как Chrome был обновлен или кончилась память. Чтобы полностью переустановить, выполните 'sudo apt update && sudo apt install -y chromium-chromedriver'"
-                ) from primary_err
+                try:
+                    import subprocess
+                    subprocess.run(["killall", "-9", "chromedriver", "chromium", "chromium-browser", "snap-confine"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                    # Если бот запущен от рута (или sudo без пароля), попробуем автовосстановление пакета
+                    subprocess.run(["sudo", "-n", "apt-get", "update"], timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(["sudo", "-n", "apt-get", "install", "-y", "--reinstall", "chromium-chromedriver"], timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                
+                # Попытка №2 после очистки зависших процессов
+                try:
+                    if service:
+                        self.driver = webdriver.Chrome(service=service, options=options)
+                    else:
+                        raise RuntimeError("Chromedriver explicitly missing after cleanup")
+                except Exception as retry_err:
+                    raise RuntimeError(
+                        f"ARM64/Aarch64 detected. System chromedriver failed or missing.\n"
+                        f"Primary Error: {primary_err}\n"
+                        f"Retry Error: {retry_err}\n"
+                        f"FIX: Попробуйте перезапустить бота ('sudo systemctl restart att_bot'). Чтобы полностью переустановить, выполните 'sudo apt update && sudo apt install -y \\\"--reinstall\\\" chromium-chromedriver'"
+                    ) from retry_err
+                
+                # Если 2 попытка успешна, пробрасываемся дальше к инициализации
+                if self.driver:
+                    pass
+            else:
+                # На x86_64 системах официальных драйверов мы не пробрасываем ошибку сразу
+                pass
 
-            # Фолбэк для обычных x86_64 систем: webdriver-manager
-            try:
-                from webdriver_manager.chrome import ChromeDriverManager
-                from webdriver_manager.core.os_manager import ChromeType
+            if self.driver is None and not is_arm:
+                # Фолбэк для обычных x86_64 систем: webdriver-manager
+                try:
+                    from webdriver_manager.chrome import ChromeDriverManager
+                    from webdriver_manager.core.os_manager import ChromeType
 
-                if chromium_path:
-                    mgr_service = Service(
-                        ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
+                    if chromium_path:
+                        mgr_service = Service(
+                            ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
+                        )
+                    else:
+                        mgr_service = Service(ChromeDriverManager().install())
+                    self.driver = webdriver.Chrome(service=mgr_service, options=options)
+                except Exception as fallback_err:
+                    log_event(
+                        "chromedriver_fallback_failed",
+                        alias=self.alias,
+                        error=str(fallback_err),
                     )
-                else:
-                    mgr_service = Service(ChromeDriverManager().install())
-                self.driver = webdriver.Chrome(service=mgr_service, options=options)
-            except Exception as fallback_err:
-                log_event(
-                    "chromedriver_fallback_failed",
-                    alias=self.alias,
-                    error=str(fallback_err),
-                )
-                raise RuntimeError(
-                    f"Не удалось запустить ChromeDriver.\n"
-                    f"Архитектура: {arch}\n"
-                    f"Основная ошибка: {primary_err}\n"
-                    f"Fallback ошибка: {fallback_err}"
-                ) from fallback_err
+                    raise RuntimeError(
+                        f"Не удалось запустить ChromeDriver.\n"
+                        f"Архитектура: {arch}\n"
+                        f"Основная ошибка: {primary_err}\n"
+                        f"Fallback ошибка: {fallback_err}"
+                    ) from fallback_err
 
         if self.driver:
             self.driver.set_page_load_timeout(30)
