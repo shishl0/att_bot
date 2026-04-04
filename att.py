@@ -8,6 +8,7 @@ import time
 import subprocess
 import re
 import platform
+import html
 import psutil
 import socket
 from dataclasses import dataclass
@@ -636,7 +637,7 @@ class AttendanceWorker(threading.Thread):
         options.add_argument("--media-cache-size=0")
         options.add_argument("--remote-debugging-port=0")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--js-flags='--max-old-space-size=256'") # Ограничиваем JS память
+        options.add_argument("--js-flags=--max-old-space-size=256") # Ограничиваем JS память
         
         user_data_dir = os.path.join(STATE_DIR, "chrome", self.alias)
         os.makedirs(user_data_dir, exist_ok=True)
@@ -656,18 +657,11 @@ class AttendanceWorker(threading.Thread):
         import shutil
         from selenium.webdriver.chrome.service import Service
 
-        # Лучшая практика для Snap Chromium на Ubuntu — НЕ указывать явно binary_location-обертки 
-        # (типа /snap/bin/chromium или /usr/bin/chromium-browser), потому что запуск snap из-под snap 
-        # приводит к ошибке 'Chrome instance exited' из-за конфликта AppArmor.
-        # Если нужно, указываем прямой ELF-бинарник внутри snap:
-        chromium_elf = "/snap/chromium/current/usr/lib/chromium-browser/chrome"
-        if os.path.exists(chromium_elf):
-            options.binary_location = chromium_elf
-            chromium_path = chromium_elf
-        else:
-            chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
-            if chromium_path:
-                options.binary_location = chromium_path
+        # Лучшая практика для Snap Chromium на Ubuntu — вообще НЕ указывать явно binary_location.
+        # Встроенный chromedriver сам найдет правильный путь до snap-пакета, а ручное указание 
+        # (в том числе ELF-бинарника) ломает профиль AppArmor и приводит к мгновенной ошибке 
+        # 'Service /usr/bin/chromedriver unexpectedly exited'.
+        chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
 
         # 1. Приоритет: системный драйвер (особенно важно для ARM64)
         # На Ubuntu Jammy /usr/bin/chromedriver - это wrapper, который часто ломается при апдейтах # zaebak
@@ -1094,7 +1088,8 @@ def format_status(alias: str) -> str:
     last_err = rt.get("last_error")
     if last_err:
         last_err_ts = rt.get("last_error_ts", "")
-        err_out = f"\n⚠️ <b>Ошибка:</b> <code>{last_err[:200]}</code> ({last_err_ts})"
+        last_err_esc = html.escape(last_err[:200])
+        err_out = f"\n⚠️ <b>Ошибка:</b> <code>{last_err_esc}</code> ({last_err_ts})"
 
     return (
         f"👤 <b>Аккаунт:</b> {alias}\n"
