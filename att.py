@@ -64,13 +64,15 @@ def kill_zombies() -> None:
         # Очистка мусора Chromium в /tmp, чтобы не забивался диск или tmpfs на Orange Pi
         try:
             for item in os.listdir("/tmp"):
-                if item.startswith(".org.chromium.") or item.startswith(".com.google.Chrome."):
+                if item.startswith(".org.chromium.") or item.startswith(".com.google.Chrome.") or item.startswith("att_bot_chrome"):
                     path = os.path.join("/tmp", item)
                     try:
-                        if os.path.isdir(path):
-                            shutil.rmtree(path, ignore_errors=True)
-                        else:
-                            os.remove(path)
+                        # Удаляем только старые временные профили (старше 2 часов), чтобы не убивать живые сессии
+                        if time.time() - os.path.getmtime(path) > 7200:
+                            if os.path.isdir(path):
+                                shutil.rmtree(path, ignore_errors=True)
+                            else:
+                                os.remove(path)
                     except Exception:
                         pass
         except Exception:
@@ -639,7 +641,9 @@ class AttendanceWorker(threading.Thread):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--js-flags=--max-old-space-size=256") # Ограничиваем JS память
         
-        user_data_dir = os.path.join(STATE_DIR, "chrome", self.alias)
+        # Используем /tmp для профиля Chrome, чтобы избежать ошибок AppArmor на серверах.
+        # Snap запрещает доступ к /root, из-за чего chromedriver может падать со "Status code 1"
+        user_data_dir = os.path.join("/tmp", "att_bot_chrome_profiles", self.alias)
         os.makedirs(user_data_dir, exist_ok=True)
         options.add_argument(f"--user-data-dir={user_data_dir}")
 
@@ -655,49 +659,76 @@ class AttendanceWorker(threading.Thread):
         options.page_load_strategy = 'eager' # Не ждем загрузки всех картинок
 
         import shutil
+        import subprocess
         from selenium.webdriver.chrome.service import Service
 
-        # Лучшая практика для Snap Chromium на Ubuntu — вообще НЕ указывать явно binary_location.
-        # Встроенный chromedriver сам найдет правильный путь до snap-пакета, а ручное указание 
-        # (в том числе ELF-бинарника) ломает профиль AppArmor и приводит к мгновенной ошибке 
-        # 'Service /usr/bin/chromedriver unexpectedly exited'.
         chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
-
-        # 1. Приоритет: системный драйвер (особенно важно для ARM64)
-        # На Ubuntu Jammy /usr/bin/chromedriver - это wrapper, который часто ломается при апдейтах # zaebak
-        snap_driver = "/snap/bin/chromium.chromedriver"
-        if os.path.isfile(snap_driver) and os.access(snap_driver, os.X_OK):
-            driver_path = snap_driver
-        else:
-            driver_path = shutil.which("chromedriver")
-            
-        service = Service(executable_path=driver_path) if driver_path else None
 
         # 2. Проверка архитектуры
         arch = platform.machine().lower()
         is_arm = "arm" in arch or "aarch64" in arch
 
+        # Список путей для попыток: сначала системный, потом snap, потом авто
+        driver_paths = []
+        if os.path.isfile("/usr/bin/chromedriver") and os.access("/usr/bin/chromedriver", os.X_OK):
+            driver_paths.append("/usr/bin/chromedriver")
+        if os.path.isfile("/snap/bin/chromium.chromedriver") and os.access("/snap/bin/chromium.chromedriver", os.X_OK):
+            driver_paths.append("/snap/bin/chromium.chromedriver")
+        
+        fallback_which = shutil.which("chromedriver")
+        if fallback_which and fallback_which not in driver_paths:
+            driver_paths.append(fallback_which)
+            
+        if not driver_paths:
+            driver_paths.append(None) # Позволит Selenium самому попытаться найти путь, если ничего нет
+
+        success = False
+        primary_err_str = ""
+
+        def kill_chrome_processes():
+            try:
+                subprocess.run(["killall", "-9", "chromedriver", "chromium", "chromium-browser", "snap-confine"], 
+                               stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            except Exception:
+                pass
+
         for attempt in range(1, 6):
+            if success:
+                break
+                
+            # Пробуем разные пути из доступных
+            driver_path = driver_paths[(attempt - 1) % len(driver_paths)]
+            service = Service(executable_path=driver_path) if driver_path else None
+
             try:
                 if service:
-                    # Если системный драйвер найден, пробуем его
                     self.driver = webdriver.Chrome(service=service, options=options)
                 elif not is_arm:
-                    # Если не ARM, пробуем запуск без явного сервиса (авто-поиск Selenium)
-                    self.driver = webdriver.Chrome(options=options)
+                    # Если не ARM, пробуем запуск без явного сервиса (авто-поиск Selenium / webdriver_manager)
+                    try:
+                        from webdriver_manager.chrome import ChromeDriverManager
+                        from webdriver_manager.core.os_manager import ChromeType
+                        if chromium_path:
+                            mgr_service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+                        else:
+                            mgr_service = Service(ChromeDriverManager().install())
+                        self.driver = webdriver.Chrome(service=mgr_service, options=options)
+                    except Exception:
+                        self.driver = webdriver.Chrome(options=options)
                 else:
-                    # На ARM без системного драйвера ловить нечего
-                    raise RuntimeError("Chromedriver not found in PATH (required for ARM64)")
+                    self.driver = webdriver.Chrome(options=options)
 
-                # Успешный запуск, выходим из цикла попыток
+                success = True
                 break
 
-            except Exception as primary_err:
+            except Exception as err:
+                primary_err_str = str(err)
                 log_event(
                     "chromedriver_fallback_setup",
                     alias=self.alias,
                     attempt=attempt,
-                    primary_error=str(primary_err),
+                    driver_path=driver_path,
+                    primary_error=primary_err_str,
                     arch=arch
                 )
 
@@ -706,65 +737,30 @@ class AttendanceWorker(threading.Thread):
                         service.process.kill()
                     except Exception:
                         pass
+                
+                # Ждем и очищаем процессы перед следующей попыткой
+                time.sleep(10)
+                kill_chrome_processes()
+                time.sleep(5)
 
-                if attempt < 5:
-                    # Ждем перед следующей попыткой. Snap часто обновляется в фоне и блокирует chromedriver.
-                    # Пользователь просил: "Пусть та проверка которую оно делает хотя бы бывает чуть позже что ли".
-                    import time
-                    time.sleep(120)
-                    continue
-
-                # На ARM после всех ожиданий делаем жесткую очистку
-                if is_arm:
+                if attempt == 3 and is_arm:
+                    # На 3-й попытке на ARM пробуем переустановить пакет, т.к. системный драйвер мог сломаться
                     try:
-                        import subprocess
-                        subprocess.run(["killall", "-9", "chromedriver", "chromium", "chromium-browser", "snap-confine"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                        import time
-                        time.sleep(5)
                         subprocess.run(["sudo", "-n", "apt-get", "update"], timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         subprocess.run(["sudo", "-n", "apt-get", "install", "-y", "chromium-chromedriver"], timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
-                    
-                    try:
-                        import time
-                        time.sleep(10)
-                        if service:
-                            self.driver = webdriver.Chrome(service=service, options=options)
-                        else:
-                            raise RuntimeError("Chromedriver explicitly missing after cleanup")
-                    except Exception as retry_err:
-                        raise RuntimeError(
-                            f"ARM64/Aarch64 detected. System chromedriver failed or missing.\n"
-                            f"Primary Error: {primary_err}\n"
-                            f"Retry Error: {retry_err}\n"
-                            f"FIX: Попробуйте выполнить 'sudo apt update && sudo apt install -y chromium-chromedriver'"
-                        ) from retry_err
-                else:
-                    # x86_64 fallback
-                    try:
-                        from webdriver_manager.chrome import ChromeDriverManager
-                        from webdriver_manager.core.os_manager import ChromeType
+                    # Перепроверяем правильность конфигурации через /usr/bin/chromedriver
+                    if "/usr/bin/chromedriver" not in driver_paths:
+                        driver_paths.append("/usr/bin/chromedriver")
 
-                        if chromium_path:
-                            mgr_service = Service(
-                                ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
-                            )
-                        else:
-                            mgr_service = Service(ChromeDriverManager().install())
-                        self.driver = webdriver.Chrome(service=mgr_service, options=options)
-                    except Exception as fallback_err:
-                        log_event(
-                            "chromedriver_fallback_failed",
-                            alias=self.alias,
-                            error=str(fallback_err),
-                        )
-                        raise RuntimeError(
-                            f"Не удалось запустить ChromeDriver.\n"
-                            f"Архитектура: {arch}\n"
-                            f"Основная ошибка: {primary_err}\n"
-                            f"Fallback ошибка: {fallback_err}"
-                        ) from fallback_err
+        if not success:
+            raise RuntimeError(
+                f"Не удалось инициализировать ChromeDriver после 5 попыток.\n"
+                f"Архитектура: {arch}\n"
+                f"Последняя ошибка: {primary_err_str}\n"
+                f"Детали: Убедитесь, что 'chromium-chromedriver' установлен. Запустите 'sudo apt update && sudo apt install -y chromium-chromedriver'."
+            )
 
         if self.driver:
             self.driver.set_page_load_timeout(30)
