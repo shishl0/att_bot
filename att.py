@@ -64,7 +64,7 @@ def kill_zombies() -> None:
         # Очистка мусора Chromium в /tmp, чтобы не забивался диск или tmpfs на Orange Pi
         try:
             for item in os.listdir("/tmp"):
-                if item.startswith(".org.chromium.") or item.startswith(".com.google.Chrome.") or item.startswith("att_bot_chrome"):
+                if item.startswith(".org.chromium.") or item.startswith(".com.google.Chrome."):
                     path = os.path.join("/tmp", item)
                     try:
                         # Удаляем только старые временные профили (старше 2 часов), чтобы не убивать живые сессии
@@ -746,8 +746,8 @@ class AttendanceWorker(threading.Thread):
                 if attempt == 3 and is_arm:
                     # На 3-й попытке на ARM пробуем переустановить пакет, т.к. системный драйвер мог сломаться
                     try:
-                        subprocess.run(["sudo", "-n", "apt-get", "update"], timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run(["sudo", "-n", "apt-get", "install", "-y", "chromium-chromedriver"], timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(["sudo", "-n", "/usr/bin/apt-get", "update"], timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run(["sudo", "-n", "/usr/bin/apt-get", "install", "-y", "--reinstall", "chromium-chromedriver"], timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
                     # Перепроверяем правильность конфигурации через /usr/bin/chromedriver
