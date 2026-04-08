@@ -614,7 +614,7 @@ class AttendanceWorker(threading.Thread):
         acc = get_account(self.alias) or {}
         headless = bool(get_setting(acc, "headless", True))
         if headless:
-            options.add_argument("--headless=new")
+            options.add_argument("--headless") # Используем старый headless без =new, так как он вызывает ошибку Ozone/Wayland в Snap на серверах
 
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
@@ -641,9 +641,8 @@ class AttendanceWorker(threading.Thread):
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--js-flags=--max-old-space-size=256") # Ограничиваем JS память
         
-        # Используем /tmp для профиля Chrome, чтобы избежать ошибок AppArmor на серверах.
-        # Snap запрещает доступ к /root, из-за чего chromedriver может падать со "Status code 1"
-        user_data_dir = os.path.join("/tmp", "att_bot_chrome_profiles", self.alias)
+        # Сохраняем профиль локально, так как Snap-версии Chromium (и systemd) часто имеют проблемы с доступом к /tmp
+        user_data_dir = os.path.join(STATE_DIR, "chrome_profiles", self.alias)
         os.makedirs(user_data_dir, exist_ok=True)
         options.add_argument(f"--user-data-dir={user_data_dir}")
 
@@ -663,10 +662,19 @@ class AttendanceWorker(threading.Thread):
         from selenium.webdriver.chrome.service import Service
 
         chromium_path = shutil.which("chromium-browser") or shutil.which("chromium")
+        if chromium_path:
+            options.binary_location = chromium_path
 
-        # 2. Проверка архитектуры
+        # 2. Проверка архитектуры и окружения
         arch = platform.machine().lower()
         is_arm = "arm" in arch or "aarch64" in arch
+        
+        # Фикс для Snap: если XDG_RUNTIME_DIR недоступен, Snap падает с кодом 1
+        xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+        if xdg_runtime and not os.path.exists(xdg_runtime):
+            fallback_xdg = os.path.join("/tmp", f"xdg_att_{self.alias}")
+            os.makedirs(fallback_xdg, exist_ok=True)
+            os.environ["XDG_RUNTIME_DIR"] = fallback_xdg
 
         # Список путей для попыток: сначала системный, потом snap, потом авто
         driver_paths = []
