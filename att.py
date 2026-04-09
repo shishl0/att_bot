@@ -577,6 +577,13 @@ class AttendanceWorker(threading.Thread):
                 rt["last_error"] = error_str
                 rt["last_error_ts"] = datetime.now().isoformat(timespec="seconds")
                 set_runtime(self.alias, rt)
+                
+                # Подсчет времени работы бота
+                start_ts = getattr(self, "_driver_started_at", None) or self._started_at_ts or time.time()
+                up_sec = int(time.time() - start_ts)
+                up_str = format_duration(up_sec)
+                short_err = error_str[:300] + ('...' if len(error_str) > 300 else '')
+                self.notifier.send_all(f"[{self.alias}] ❌ Ошибка (проработал: {up_str}):\n<code>{html.escape(short_err)}</code>")
                 time.sleep(5)
 
             maybe_warn_low_battery(self.notifier)
@@ -1255,6 +1262,12 @@ def tg_aliases_markup(action_prefix: str) -> Dict[str, Any]:
     buttons = []
     for a in aliases:
         buttons.append([{"text": f"👤 {a}", "callback_data": f"{action_prefix}:{a}"}])
+    
+    if action_prefix == "act_enable":
+        buttons.append([{"text": "✅ Включить все", "callback_data": "act_enable_all"}])
+    elif action_prefix == "act_disable":
+        buttons.append([{"text": "⏸ Выключить все", "callback_data": "act_disable_all"}])
+        
     buttons.append([{"text": "⏪ Отмена", "callback_data": "menu_main"}])
     return {"inline_keyboard": buttons}
 
@@ -1348,6 +1361,14 @@ def run_telegram(token: str) -> None:
                             send(chat_id, "Не найден.", markup=tg_back_markup(), message_id=msg_id)
                         continue
 
+                    if data_cb == "act_enable_all":
+                        state = load_state()
+                        for a in state.get("accounts", {}).keys():
+                            enable_account(a, manual=True)
+                            ensure_worker(a, notifier)
+                        send(chat_id, "✅ Все аккаунты включены.", markup=tg_back_markup(), message_id=msg_id)
+                        continue
+
                     if data_cb == "menu_disable":
                         send(chat_id, "Выберите аккаунт для выключения:", markup=tg_aliases_markup("act_disable"), message_id=msg_id)
                         continue
@@ -1358,6 +1379,16 @@ def run_telegram(token: str) -> None:
                         if w:
                             w.stop()
                         send(chat_id, f"⏸ <b>{alias}</b> выключен.", markup=tg_back_markup(), message_id=msg_id)
+                        continue
+
+                    if data_cb == "act_disable_all":
+                        state = load_state()
+                        for a in state.get("accounts", {}).keys():
+                            disable_account(a, reason="manual")
+                            w = WORKERS.get(a)
+                            if w:
+                                w.stop()
+                        send(chat_id, "⏸ Все аккаунты выключены.", markup=tg_back_markup(), message_id=msg_id)
                         continue
 
                     if data_cb == "menu_screenshot":
