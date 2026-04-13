@@ -473,13 +473,11 @@ class AttendanceWorker(threading.Thread):
         self._logged_in: bool = False
         self._net_fail_count: int = 0
         self._started_at_ts: Optional[float] = None
-        self._next_heartbeat_ts: Optional[float] = None
         self._driver_started_at: float = 0
 
     def run(self) -> None:
         self.notifier.send_all(f"[{self.alias}] ✅ Бот запущен.")
         self._started_at_ts = time.time()
-        self._next_heartbeat_ts = self._started_at_ts + 600
         while not SHUTDOWN.is_set() and not self.stop_event.is_set():
             acc = get_account(self.alias)
             if not acc:
@@ -587,7 +585,6 @@ class AttendanceWorker(threading.Thread):
                 time.sleep(5)
 
             maybe_warn_low_battery(self.notifier)
-            self._heartbeat()
         self._close_driver()
 
     def stop(self) -> None:
@@ -1003,26 +1000,7 @@ class AttendanceWorker(threading.Thread):
         self.notifier.send_all(msg)
         log_event("debug", alias=self.alias, debug_event=event, **fields)
 
-    def _heartbeat(self) -> None:
-        if self._started_at_ts is None or self._next_heartbeat_ts is None:
-            return
 
-        now = time.time()
-        while now >= self._next_heartbeat_ts:
-            elapsed = int(now - self._started_at_ts)
-            self.notifier.send_all(f"[{self.alias}] ✅ Работает уже {format_duration(elapsed)}.")
-
-            # Инкрементальный heartbeat:
-            # до 30 минут -> каждые 10 минут
-            # до 2 часов -> каждые 30 минут
-            # дальше -> каждый час
-            if elapsed < 1800:
-                step = 600
-            elif elapsed < 7200:
-                step = 1800
-            else:
-                step = 3600
-            self._next_heartbeat_ts += step
 
 
 # -------------------- Worker Management --------------------
